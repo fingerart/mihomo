@@ -73,6 +73,7 @@ type ListenerHandler struct {
 	Inet4Address          []netip.Prefix
 	Inet6Address          []netip.Prefix
 	DisableICMPForwarding bool
+	directICMPDialer      C.ICMPDialer
 }
 
 var emptyAddressSet = []*netipx.IPSet{{}}

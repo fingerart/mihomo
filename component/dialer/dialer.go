@@ -174,24 +174,35 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
 	return dialer.DialContext(ctx, network, address)
 }
 
-func ICMPControl(destination netip.Addr) func(network, address string, conn syscall.RawConn) error {
+func ICMPControl(destination netip.Addr, options ...Option) func(network, address string, conn syscall.RawConn) error {
+	opt := applyOptions(options...)
 	return func(network, address string, conn syscall.RawConn) error {
 		if DefaultSocketHook != nil {
 			return DefaultSocketHook(network, address, conn)
 		}
 		dialer := &net.Dialer{}
-		interfaceName := DefaultInterface.Load()
+		interfaceName := opt.interfaceName
+		if interfaceName == "" {
+			interfaceName = DefaultInterface.Load()
+		}
 		if interfaceName == "" {
 			if finder := DefaultInterfaceFinder.Load(); finder != nil {
 				interfaceName = finder.FindInterfaceName(destination)
 			}
 		}
 		if interfaceName != "" {
-			if err := bindIfaceToDialer(interfaceName, dialer, network, destination); err != nil {
+			bind := bindIfaceToDialer
+			if opt.fallbackBind {
+				bind = fallbackBindIfaceToDialer
+			}
+			if err := bind(interfaceName, dialer, network, destination); err != nil {
 				return err
 			}
 		}
-		routingMark := int(DefaultRoutingMark.Load())
+		routingMark := opt.routingMark
+		if routingMark == 0 {
+			routingMark = int(DefaultRoutingMark.Load())
+		}
 		if routingMark != 0 {
 			bindMarkToDialer(routingMark, dialer, network, destination)
 		}

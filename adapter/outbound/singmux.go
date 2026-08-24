@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
@@ -18,6 +19,11 @@ type SingMux struct {
 	ProxyAdapter
 	client  *mux.Client
 	onlyTcp bool
+}
+
+type singMuxICMP struct {
+	*SingMux
+	dialer C.ICMPDialer
 }
 
 type SingMuxOption struct {
@@ -61,6 +67,10 @@ func (s *SingMux) ListenPacketContext(ctx context.Context, metadata *C.Metadata)
 		return nil, E.New("packetConn is nil")
 	}
 	return NewPacketConn(N.NewThreadSafePacketConn(pc), s), nil
+}
+
+func (s *singMuxICMP) DialICMP(ctx context.Context, metadata *C.Metadata, writer C.ICMPWriter, timeout time.Duration) (C.ICMPConnection, error) {
+	return s.dialer.DialICMP(ctx, metadata, writer, timeout)
 }
 
 func (s *SingMux) SupportUDP() bool {
@@ -118,6 +128,9 @@ func NewSingMux(option SingMuxOption, proxy ProxyAdapter) (ProxyAdapter, error) 
 		ProxyAdapter: proxy,
 		client:       client,
 		onlyTcp:      option.OnlyTcp,
+	}
+	if dialer, ok := proxy.(C.ICMPDialer); ok {
+		return &singMuxICMP{SingMux: outbound, dialer: dialer}, nil
 	}
 	return outbound, nil
 }

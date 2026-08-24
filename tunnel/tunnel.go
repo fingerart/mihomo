@@ -116,6 +116,14 @@ func (t tunnel) NatTable() C.NatTable {
 	return natTable
 }
 
+func (t tunnel) ResolveMetadata(metadata *C.Metadata) (C.Proxy, C.Rule, error) {
+	fixMetadata(metadata)
+	if err := preHandleMetadata(metadata); err != nil {
+		return nil, nil, err
+	}
+	return resolveMetadata(metadata)
+}
+
 func (t tunnel) Proxies() map[string]C.Proxy {
 	return proxies
 }
@@ -325,7 +333,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
 	}
 	var (
 		resolved             bool
-		attemptProcessLookup = metadata.Type != C.INNER
+		attemptProcessLookup = metadata.Type != C.INNER && metadata.NetWork != C.ICMP
 	)
 
 	if node, ok := resolver.DefaultHosts.Search(metadata.Host, false); ok {

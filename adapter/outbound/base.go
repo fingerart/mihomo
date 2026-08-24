@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
@@ -18,6 +19,7 @@ import (
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/gofrs/uuid/v5"
+	"github.com/metacubex/sing/common/buf"
 )
 
 type ProxyAdapter interface {
@@ -359,6 +361,31 @@ type autoCloseProxyAdapter struct {
 	closeErr  error
 }
 
+type autoCloseICMPProxyAdapter struct {
+	*autoCloseProxyAdapter
+	dialer C.ICMPDialer
+}
+
+type refICMPConnection struct {
+	connection C.ICMPConnection
+	ref        any
+}
+
+func (c *refICMPConnection) WritePacket(packet *buf.Buffer) error {
+	defer runtime.KeepAlive(c.ref)
+	return c.connection.WritePacket(packet)
+}
+
+func (c *refICMPConnection) Close() error {
+	defer runtime.KeepAlive(c.ref)
+	return c.connection.Close()
+}
+
+func (c *refICMPConnection) IsClosed() bool {
+	defer runtime.KeepAlive(c.ref)
+	return c.connection.IsClosed()
+}
+
 func (p *autoCloseProxyAdapter) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
 	c, err := p.ProxyAdapter.DialContext(ctx, metadata)
 	if err != nil {
@@ -381,6 +408,14 @@ func (p *autoCloseProxyAdapter) ListenPacketContext(ctx context.Context, metadat
 	return pc, nil
 }
 
+func (p *autoCloseICMPProxyAdapter) DialICMP(ctx context.Context, metadata *C.Metadata, writer C.ICMPWriter, timeout time.Duration) (C.ICMPConnection, error) {
+	connection, err := p.dialer.DialICMP(ctx, metadata, writer, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &refICMPConnection{connection: connection, ref: p}, nil
+}
+
 func (p *autoCloseProxyAdapter) Close() error {
 	p.closeOnce.Do(func() {
 		log.Debugln("Closing outdated proxy [%s]", p.Name())
@@ -396,5 +431,8 @@ func NewAutoCloseProxyAdapter(adapter ProxyAdapter) ProxyAdapter {
 	}
 	// auto close ProxyAdapter
 	runtime.SetFinalizer(proxy, (*autoCloseProxyAdapter).Close)
+	if dialer, ok := adapter.(C.ICMPDialer); ok {
+		return &autoCloseICMPProxyAdapter{autoCloseProxyAdapter: proxy, dialer: dialer}
+	}
 	return proxy
 }

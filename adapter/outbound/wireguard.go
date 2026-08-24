@@ -163,7 +163,7 @@ func (o IPStackOption) validate() error {
 	default:
 		return fmt.Errorf("invalid IP stack mode %q; expected auto, gvisor, or mips", o.Mode)
 	}
-	switch mipstack.CongestionControl(o.CongestionController) {
+	switch o.CongestionController {
 	case "", mipstack.CongestionControlCUBIC, mipstack.CongestionControlReno, mipstack.CongestionControlBBR, mipstack.CongestionControlBBR3:
 		return nil
 	default:
@@ -171,13 +171,17 @@ func (o IPStackOption) validate() error {
 	}
 }
 
-// ipStack is the mihomo IP stack's packet and socket surface, adapted from
-// sing-wireguard only for gVisor.
+// ipStack is the common packet and socket surface used by mihomo's userspace
+// IP stacks.
 type ipStack interface {
 	Start() error
+	LocalAddresses() []netip.Addr
 	DialTCP(ctx context.Context, network string, source, destination netip.AddrPort) (net.Conn, error)
 	DialUDP(ctx context.Context, network string, source, destination netip.AddrPort) (net.Conn, error)
+	DialIP(ctx context.Context, network string, source, destination netip.Addr) (net.Conn, error)
+	ListenTCP(ctx context.Context, network string, local netip.AddrPort) (net.Listener, error)
 	ListenUDP(ctx context.Context, network string, local netip.AddrPort) (net.PacketConn, error)
+	ListenIP(ctx context.Context, network string, local netip.Addr) (net.PacketConn, error)
 	Read(buffers [][]byte, sizes []int, offset int) (int, error)
 	Write(buffers [][]byte, offset int) (int, error)
 	MTU() (int, error)
@@ -200,11 +204,11 @@ func newIPStack(option IPStackOption, localAddresses []netip.Prefix, mtu uint32)
 	case ipStackGVisor:
 		return wireguard.NewStackDevice(localAddresses, mtu)
 	case ipStackMips:
-		return mipstack.New(mipstack.Config{
+		stack, err := mipstack.New(mipstack.Config{
 			LocalAddresses: localAddresses,
 			MTU:            mtu,
 			TCP: mipstack.TCPSocketDefaults{
-				CongestionControl: mipstack.CongestionControl(option.CongestionController),
+				CongestionControl: option.CongestionController,
 				// Align with sing-wireguard: enable keepalive with 15-second
 				// idle/interval timing and gVisor's default probe count.
 				KeepAlive: true,
@@ -212,7 +216,15 @@ func newIPStack(option IPStackOption, localAddresses []netip.Prefix, mtu uint32)
 					Idle: 15 * time.Second, Interval: 15 * time.Second, Count: 9,
 				},
 			},
+			IP: mipstack.IPSocketDefaults{
+				IPHeaderIncludedOnRead:  true,
+				IPHeaderIncludedOnWrite: true,
+			},
 		})
+		if err != nil {
+			return nil, err
+		}
+		return stack, nil
 	default:
 		return nil, errors.New("invalid IP stack mode")
 	}
