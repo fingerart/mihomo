@@ -121,6 +121,12 @@ func TestPrepareConnectionRoutesICMPThroughSelectedProxy(t *testing.T) {
 	resolver := &testMetadataResolver{proxy: group}
 	direct := newTestICMPDialer("direct", C.Direct, &testICMPConnection{}, nil)
 	handler := newPrepareTestHandler(t, resolver, direct)
+	handler.SourceAdditions = func(source netip.Addr) []inbound.Addition {
+		if source == netip.MustParseAddr("10.0.0.2") {
+			return []inbound.Addition{inbound.WithInUser("phone")}
+		}
+		return nil
+	}
 	writer := testICMPWriter{}
 
 	destination, err := handler.PrepareConnection(
@@ -147,6 +153,9 @@ func TestPrepareConnectionRoutesICMPThroughSelectedProxy(t *testing.T) {
 	}
 	if resolver.metadata.InName != "test-tun" {
 		t.Fatalf("inbound additions were not applied: %+v", resolver.metadata)
+	}
+	if resolver.metadata.InUser != "phone" {
+		t.Fatalf("source additions were not applied: %+v", resolver.metadata)
 	}
 	if selected.writer != writer {
 		t.Fatal("selected proxy did not receive the TUN reply writer")

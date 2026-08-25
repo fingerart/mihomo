@@ -12,6 +12,7 @@ import (
 
 type SingDialer interface {
 	N.Dialer
+	ListenPacketAddress(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error)
 }
 
 type singDialer struct {
@@ -26,6 +27,14 @@ func (d singDialer) DialContext(ctx context.Context, network string, destination
 
 func (d singDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	return d.cDialer.ListenPacket(ctx, "udp", "", destination.AddrPort())
+}
+
+func (d singDialer) ListenPacketAddress(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	network := "udp6"
+	if destination.IsIPv4() {
+		network = "udp4"
+	}
+	return d.cDialer.ListenPacket(ctx, network, destination.String(), destination.AddrPort())
 }
 
 func NewSingDialer(cDialer C.Dialer) SingDialer {

@@ -101,6 +101,16 @@ func (s *SingMux) Close() error {
 	return s.ProxyAdapter.Close()
 }
 
+func (s *SingMux) WireGuardInbound() *WireGuard {
+	provider, ok := s.ProxyAdapter.(interface {
+		WireGuardInbound() *WireGuard
+	})
+	if !ok {
+		return nil
+	}
+	return provider.WireGuardInbound()
+}
+
 func NewSingMux(option SingMuxOption, proxy ProxyAdapter) (ProxyAdapter, error) {
 	// TODO
 	// "TCP Brutal is only supported on Linux-based systems"

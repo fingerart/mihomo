@@ -425,6 +425,16 @@ func (p *autoCloseProxyAdapter) Close() error {
 	return p.closeErr
 }
 
+func (p *autoCloseProxyAdapter) WireGuardInbound() *WireGuard {
+	provider, ok := p.ProxyAdapter.(interface {
+		WireGuardInbound() *WireGuard
+	})
+	if !ok {
+		return nil
+	}
+	return provider.WireGuardInbound()
+}
+
 func NewAutoCloseProxyAdapter(adapter ProxyAdapter) ProxyAdapter {
 	proxy := &autoCloseProxyAdapter{
 		ProxyAdapter: adapter,

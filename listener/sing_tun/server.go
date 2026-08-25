@@ -73,6 +73,7 @@ type ListenerHandler struct {
 	Inet4Address          []netip.Prefix
 	Inet6Address          []netip.Prefix
 	DisableICMPForwarding bool
+	SourceAdditions       func(netip.Addr) []inbound.Addition
 	directICMPDialer      C.ICMPDialer
 }
 

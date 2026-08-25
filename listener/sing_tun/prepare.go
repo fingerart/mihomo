@@ -28,6 +28,9 @@ func (h *ListenerHandler) PrepareConnection(network string, source M.Socksaddr, 
 		metadata := &C.Metadata{NetWork: C.ICMP, Type: h.Type}
 		inbound.ApplyAdditions(metadata, inbound.WithSrcAddr(source), inbound.WithDstAddr(destination))
 		inbound.ApplyAdditions(metadata, h.Additions...)
+		if h.SourceAdditions != nil && source.Addr.IsValid() {
+			inbound.ApplyAdditions(metadata, h.SourceAdditions(source.Addr.Unmap())...)
+		}
 		ctx := context.Background()
 		if timeout > 0 {
 			var cancel context.CancelFunc

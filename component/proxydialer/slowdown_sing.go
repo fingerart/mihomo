@@ -25,6 +25,12 @@ func (d SlowDownSingDialer) ListenPacket(ctx context.Context, destination M.Sock
 	})
 }
 
+func (d SlowDownSingDialer) ListenPacketAddress(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	return slowdown.Do(d.Slowdown, ctx, func() (net.PacketConn, error) {
+		return d.SingDialer.ListenPacketAddress(ctx, destination)
+	})
+}
+
 func NewSlowDownSingDialer(d SingDialer, sd *slowdown.SlowDown) SlowDownSingDialer {
 	return SlowDownSingDialer{
 		SingDialer: d,

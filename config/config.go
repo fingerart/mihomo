@@ -33,6 +33,7 @@ import (
 	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/listener"
 	LC "github.com/metacubex/mihomo/listener/config"
+	LI "github.com/metacubex/mihomo/listener/inbound"
 	"github.com/metacubex/mihomo/log"
 	R "github.com/metacubex/mihomo/rules"
 	RB "github.com/metacubex/mihomo/rules/bundle"
@@ -680,6 +681,9 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = appendProxyInboundListeners(listeners, proxies); err != nil {
+		return nil, err
+	}
 	config.Listeners = listeners
 
 	log.Infoln("Geodata Loader mode: %s", geodata.LoaderName())
@@ -1009,6 +1013,24 @@ func parseListeners(cfg *RawConfig) (listeners map[string]C.InboundListener, err
 
 	}
 	return
+}
+
+func appendProxyInboundListeners(listeners map[string]C.InboundListener, proxies map[string]C.Proxy) error {
+	for _, proxy := range proxies {
+		inboundListener, ok, err := LI.NewProxyInboundListener(proxy.Adapter())
+		if err != nil {
+			return fmt.Errorf("proxy %s inbound: %w", proxy.Name(), err)
+		}
+		if !ok {
+			continue
+		}
+		name := inboundListener.Name()
+		if _, exist := listeners[name]; exist {
+			return fmt.Errorf("listener %s is the duplicate name", name)
+		}
+		listeners[name] = inboundListener
+	}
+	return nil
 }
 
 func parseRuleProviders(cfg *RawConfig) (ruleProviders map[string]P.RuleProvider, err error) {

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,10 +50,11 @@ type wireguardGoDevice interface {
 
 type WireGuard struct {
 	*Base
-	bind      *wireguard.ClientBind
-	device    wireguardGoDevice
-	tunDevice wireguardDevice
-	resolver  resolver.Resolver
+	bind       *wireguard.ClientBind
+	bindDialer *wireGuardBindDialer
+	device     wireguardGoDevice
+	tunDevice  *wireguardInboundDevice
+	resolver   resolver.Resolver
 
 	initOk        atomic.Bool
 	initMutex     sync.Mutex
@@ -60,6 +62,10 @@ type WireGuard struct {
 	option        WireGuardOption
 	connectAddr   M.Socksaddr
 	localPrefixes []netip.Prefix
+	listenAddress netip.Addr
+	peerPrefixes  []wireGuardPeerPrefix
+	forwardMutex  sync.Mutex
+	forwardReady  bool
 
 	serverAddrMap   map[M.Socksaddr]netip.AddrPort
 	serverAddrTime  atomic.TypedValue[time.Time]
@@ -77,6 +83,9 @@ type WireGuardOption struct {
 	MTU                 int    `proxy:"mtu,omitempty"`
 	UDP                 bool   `proxy:"udp,omitempty"`
 	PersistentKeepalive int    `proxy:"persistent-keepalive,omitempty"`
+	Inbound             bool   `proxy:"inbound,omitempty"`
+	Listen              string `proxy:"listen,omitempty"`
+	ListenPort          int    `proxy:"listen-port,omitempty"`
 
 	IPStack IPStackOption `proxy:"ip-stack,omitempty"`
 
@@ -91,12 +100,18 @@ type WireGuardOption struct {
 }
 
 type WireGuardPeerOption struct {
+	Name         string   `proxy:"name,omitempty"`
 	Server       string   `proxy:"server,omitempty"`
 	Port         int      `proxy:"port,omitempty"`
 	PublicKey    string   `proxy:"public-key,omitempty"`
 	PreSharedKey string   `proxy:"pre-shared-key,omitempty"`
 	Reserved     []uint8  `proxy:"reserved,omitempty"`
 	AllowedIPs   []string `proxy:"allowed-ips,omitempty"`
+}
+
+type wireGuardPeerPrefix struct {
+	prefix netip.Prefix
+	name   string
 }
 
 type AmneziaWGOption struct {
@@ -285,19 +300,21 @@ func (d *ipStackWireguardDevice) Close() error {
 	return d.ipStack.Close()
 }
 
-func newWireguardDevice(stack ipStack) (wireguardDevice, error) {
+func newWireguardDevice(stack ipStack) (*wireguardInboundDevice, error) {
+	var device wireguardDevice
 	if wgDevice, ok := stack.(wireguardDevice); ok {
-		return wgDevice, nil
+		device = wgDevice
+	} else {
+		// mipstack must start at here
+		if err := stack.Start(); err != nil {
+			return nil, err
+		}
+		device = &ipStackWireguardDevice{
+			ipStack: stack,
+			events:  make(chan tun.Event, 1),
+		}
 	}
-	// mipstack must start at here
-	err := stack.Start()
-	if err != nil {
-		return nil, err
-	}
-	return &ipStackWireguardDevice{
-		ipStack: stack,
-		events:  make(chan tun.Event, 1),
-	}, nil
+	return &wireguardInboundDevice{wireguardDevice: device}, nil
 }
 
 type wgSingErrorHandler struct {
@@ -356,7 +373,99 @@ func (option WireGuardOption) Prefixes() ([]netip.Prefix, error) {
 	return localPrefixes, nil
 }
 
+func (option WireGuardPeerOption) hasEndpoint() bool {
+	return option.Server != "" && option.Port != 0
+}
+
+func prepareWireGuardInbound(option WireGuardOption, localPrefixes []netip.Prefix) (netip.Addr, []wireGuardPeerPrefix, error) {
+	if option.ListenPort < 0 || option.ListenPort > 65535 {
+		return netip.Addr{}, nil, E.New("invalid WireGuard listen-port")
+	}
+	if option.Inbound {
+		stackMode := option.IPStack.Mode
+		if stackMode == ipStackAuto && features.WithGVisor {
+			stackMode = ipStackGVisor
+		}
+		if stackMode != ipStackGVisor {
+			return netip.Addr{}, nil, E.New("WireGuard inbound requires the gVisor IP stack")
+		}
+	}
+
+	var listenAddress netip.Addr
+	if option.Listen != "" {
+		parsedAddress, err := netip.ParseAddr(option.Listen)
+		if err != nil {
+			return netip.Addr{}, nil, E.Cause(err, "parse WireGuard listen address")
+		}
+		listenAddress = parsedAddress.Unmap()
+	} else if option.ListenPort != 0 {
+		listenAddress = netip.IPv4Unspecified()
+	}
+	if listenAddress.IsValid() && option.DialerProxy != "" {
+		return netip.Addr{}, nil, E.New("WireGuard listen and listen-port are incompatible with dialer-proxy")
+	}
+
+	peers := option.Peers
+	if len(peers) == 0 {
+		peers = []WireGuardPeerOption{option.WireGuardPeerOption}
+	}
+	prefixNames := make(map[netip.Prefix]string)
+	for index, peer := range peers {
+		if peer.Port < 0 || peer.Port > 65535 || (peer.Server == "") != (peer.Port == 0) {
+			return netip.Addr{}, nil, E.New("invalid endpoint for peer ", index, "; server and port must be configured together")
+		}
+		if !peer.hasEndpoint() {
+			if len(peer.Reserved) > 0 {
+				return netip.Addr{}, nil, E.New("reserved is not supported for passive peer ", index)
+			}
+		}
+
+		name := peer.Name
+		if name == "" {
+			name = peer.PublicKey
+		}
+		allowedIPs := peer.AllowedIPs
+		if len(option.Peers) == 0 {
+			for _, prefix := range localPrefixes {
+				if prefix.Addr().Is4() {
+					allowedIPs = append(allowedIPs, "0.0.0.0/0")
+				} else {
+					allowedIPs = append(allowedIPs, "::/0")
+				}
+			}
+		}
+		for allowedIndex, allowedIP := range allowedIPs {
+			prefix, err := netip.ParsePrefix(allowedIP)
+			if err != nil {
+				return netip.Addr{}, nil, E.Cause(err, "parse allowed IP ", allowedIndex, " for peer ", index)
+			}
+			prefixNames[prefix.Masked()] = name
+		}
+	}
+
+	peerPrefixes := make([]wireGuardPeerPrefix, 0, len(prefixNames))
+	for prefix, name := range prefixNames {
+		peerPrefixes = append(peerPrefixes, wireGuardPeerPrefix{prefix: prefix, name: name})
+	}
+	sort.Slice(peerPrefixes, func(i, j int) bool {
+		return peerPrefixes[i].prefix.Bits() > peerPrefixes[j].prefix.Bits()
+	})
+	return listenAddress, peerPrefixes, nil
+}
+
 func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
+	option.IPStack.normalize()
+	if err := option.IPStack.validate(); err != nil {
+		return nil, err
+	}
+	localPrefixes, err := option.Prefixes()
+	if err != nil {
+		return nil, err
+	}
+	listenAddress, peerPrefixes, err := prepareWireGuardInbound(option, localPrefixes)
+	if err != nil {
+		return nil, err
+	}
 	outbound := &WireGuard{
 		Base: NewBase(BaseOption{
 			Name:         option.Name,
@@ -368,9 +477,17 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 			RoutingMark:  option.RoutingMark,
 			Prefer:       option.IPVersion,
 		}),
+		localPrefixes: localPrefixes,
+		listenAddress: listenAddress,
+		peerPrefixes:  peerPrefixes,
 	}
 	outbound.dialer = option.NewDialer(outbound.DialOptions())
 	singDialer := proxydialer.NewSingDialer(proxydialer.NewSlowDownDialer(outbound.dialer, slowdown.New()))
+	var bindListenAddress netip.AddrPort
+	if listenAddress.IsValid() {
+		bindListenAddress = netip.AddrPortFrom(listenAddress, uint16(option.ListenPort))
+	}
+	outbound.bindDialer = newWireGuardBindDialer(singDialer, bindListenAddress)
 
 	var reserved [3]uint8
 	if len(option.Reserved) > 0 {
@@ -379,22 +496,21 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 		}
 		copy(reserved[:], option.Reserved)
 	}
-	var isConnect bool
+	var (
+		isConnect   bool
+		hasEndpoint bool
+	)
 	if len(option.Peers) < 2 {
-		isConnect = true
 		if len(option.Peers) == 1 {
 			outbound.connectAddr = option.Peers[0].Addr()
+			hasEndpoint = option.Peers[0].hasEndpoint()
 		} else {
 			outbound.connectAddr = option.Addr()
+			hasEndpoint = option.hasEndpoint()
 		}
+		isConnect = !option.Inbound && !listenAddress.IsValid() && hasEndpoint
 	}
-	outbound.bind = wireguard.NewClientBind(context.Background(), wgSingErrorHandler{outbound.Name()}, singDialer, isConnect, outbound.connectAddr.AddrPort(), reserved)
-
-	var err error
-	outbound.localPrefixes, err = option.Prefixes()
-	if err != nil {
-		return nil, err
-	}
+	outbound.bind = wireguard.NewClientBind(context.Background(), wgSingErrorHandler{outbound.Name()}, outbound.bindDialer, isConnect, outbound.connectAddr.AddrPort(), reserved)
 
 	{
 		bytes, err := base64.StdEncoding.DecodeString(option.PrivateKey)
@@ -459,10 +575,6 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	mtu := option.MTU
 	if mtu == 0 {
 		mtu = 1408
-	}
-	option.IPStack.normalize()
-	if err = option.IPStack.validate(); err != nil {
-		return nil, err
 	}
 	if len(outbound.localPrefixes) == 0 {
 		return nil, E.New("missing local address")
@@ -582,6 +694,11 @@ func (w *WireGuard) init0(ctx context.Context) error {
 		w.initErr = err
 		return w.initErr
 	}
+	if w.option.Inbound || w.listenAddress.IsValid() {
+		if err = w.bindDialer.WaitOpen(ctx); err != nil {
+			return E.Cause(err, "open WireGuard listener")
+		}
+	}
 
 	w.initOk.Store(true)
 	return nil
@@ -610,6 +727,9 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 	ipcConf := ""
 	if !updateOnly {
 		ipcConf += "private_key=" + w.option.PrivateKey + "\n"
+		if w.option.ListenPort != 0 {
+			ipcConf += "listen_port=" + strconv.Itoa(w.option.ListenPort) + "\n"
+		}
 		if w.option.AmneziaWGOption != nil {
 			if w.option.AmneziaWGOption.JC != 0 {
 				ipcConf += "jc=" + strconv.Itoa(w.option.AmneziaWGOption.JC) + "\n"
@@ -702,6 +822,22 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 	}
 	if len(w.option.Peers) > 0 {
 		for i, peer := range w.option.Peers {
+			if !peer.hasEndpoint() {
+				if updateOnly {
+					continue
+				}
+				ipcConf += "public_key=" + peer.PublicKey + "\n"
+				if peer.PreSharedKey != "" {
+					ipcConf += "preshared_key=" + peer.PreSharedKey + "\n"
+				}
+				for _, allowedIP := range peer.AllowedIPs {
+					ipcConf += "allowed_ip=" + allowedIP + "\n"
+				}
+				if w.option.PersistentKeepalive != 0 {
+					ipcConf += fmt.Sprintf("persistent_keepalive_interval=%d\n", w.option.PersistentKeepalive)
+				}
+				continue
+			}
 			peerAddr := peer.Addr()
 			destination, err := w.resolve(ctx, peerAddr)
 			if err != nil {
@@ -739,7 +875,7 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 				ipcConf += fmt.Sprintf("persistent_keepalive_interval=%d\n", w.option.PersistentKeepalive)
 			}
 		}
-	} else {
+	} else if w.option.hasEndpoint() {
 		destination, err := w.resolve(ctx, w.connectAddr)
 		if err != nil {
 			return "", E.Cause(err, "resolve endpoint domain")
@@ -779,12 +915,27 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 		if w.option.PersistentKeepalive != 0 {
 			ipcConf += fmt.Sprintf("persistent_keepalive_interval=%d\n", w.option.PersistentKeepalive)
 		}
+	} else if !updateOnly {
+		ipcConf += "public_key=" + w.option.PublicKey + "\n"
+		if w.option.PreSharedKey != "" {
+			ipcConf += "preshared_key=" + w.option.PreSharedKey + "\n"
+		}
+		for _, address := range w.localPrefixes {
+			if address.Addr().Is4() {
+				ipcConf += "allowed_ip=0.0.0.0/0\n"
+			} else {
+				ipcConf += "allowed_ip=::/0\n"
+			}
+		}
 	}
 	return ipcConf, nil
 }
 
 // Close implements C.ProxyAdapter
 func (w *WireGuard) Close() error {
+	if w.bindDialer != nil {
+		w.bindDialer.Close()
+	}
 	if w.device != nil {
 		w.device.Close()
 	}

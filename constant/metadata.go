@@ -45,6 +45,7 @@ const (
 	TRUSTTUNNEL
 	SHADOWQUIC
 	INNER
+	WIREGUARD
 )
 
 type AddrType byte
@@ -127,6 +128,8 @@ func (t Type) String() string {
 		return "TrustTunnel"
 	case SHADOWQUIC:
 		return "ShadowQuic"
+	case WIREGUARD:
+		return "WireGuard"
 	case INNER:
 		return "Inner"
 	default:
@@ -177,6 +180,8 @@ func ParseType(t string) (*Type, error) {
 		res = TRUSTTUNNEL
 	case "SHADOWQUIC":
 		res = SHADOWQUIC
+	case "WIREGUARD":
+		res = WIREGUARD
 	case "INNER":
 		res = INNER
 	default:

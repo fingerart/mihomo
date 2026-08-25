@@ -1288,6 +1288,10 @@ proxies: # socks5
     #    pre-shared-key: 31aIhAPwktDGpH4JDhA8GNvjFXEf/a6+UaQRyOAiyfM=
     private-key: eCtXsJZ27+4PbhDkHnB923tkUn2Gj59wZw5wFA75MnU=
     udp: true
+    # inbound: false # 启用 TCP/UDP/ICMP 入站转发，默认 false；需要 gVisor IP 栈
+    # listen: 0.0.0.0 # 可选，本地 UDP 监听地址，可独立于 listen-port 配置
+    # listen-port: 51820 # 可选，本地 UDP 监听端口；不配置时使用临时端口
+    # listen 和 listen-port 均未配置时使用自动监听地址和临时端口；显式配置任一字段时不能同时使用 dialer-proxy
     reserved: "U4An"
     # 数组格式也是合法的
     # reserved: [209,98,59]
@@ -1301,8 +1305,10 @@ proxies: # socks5
     # dns: [ 1.1.1.1, 8.8.8.8 ] # 仅在 remote-dns-resolve 为 true 时生效
     # refresh-server-ip-interval: 60 # 重新解析server ip的间隔，单位为秒，默认值为0即仅第一次链接时解析server域名，仅应在server域名对应的IP会发生变化时启用该选项（如家宽ddns）
     # 如果 peers 不为空，该段落中的 allowed-ips 不可为空；前面段落的 server,port,public-key,pre-shared-key 均会被忽略，但 private-key 会被保留且只能在顶层指定
+    # peers 内的所有 peer 共享顶层 listen、listen-port 和同一个 WireGuard socket
     # peers:
-    #   - server: 162.159.192.1
+    #   - name: phone # 可选，作为入站连接的 inboundUser，可用于 IN-USER 规则；默认使用 public-key
+    #     server: 162.159.192.1 # server 和 port 必须同时配置，也可同时省略作为被动 peer
     #     port: 2480
     #     public-key: Cr8hWlKvtDt7nrvf+f0brNQQzabAqrjfBvas9pmowjo=
     #     # pre-shared-key: 31aIhAPwktDGpH4JDhA8GNvjFXEf/a6+UaQRyOAiyfM=
