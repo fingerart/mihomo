@@ -3,6 +3,9 @@ package outbound
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
+	"strconv"
 
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/loopback"
@@ -27,7 +30,11 @@ func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn,
 	}
 	opts := d.DialOptions()
 	opts = append(opts, dialer.WithResolver(resolver.DirectHostResolver))
-	c, err := dialer.DialContext(ctx, "tcp", metadata.RemoteAddress(), opts...)
+	address := metadata.RemoteAddress()
+	if metadata.DirectDstIP.IsValid() {
+		address = net.JoinHostPort(metadata.DirectDstIP.String(), strconv.FormatUint(uint64(metadata.DstPort), 10))
+	}
+	c, err := dialer.DialContext(ctx, "tcp", address, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -42,14 +49,28 @@ func (d *Direct) ListenPacketContext(ctx context.Context, metadata *C.Metadata) 
 	if err := d.ResolveUDP(ctx, metadata); err != nil {
 		return nil, err
 	}
-	pc, err := dialer.NewDialer(d.DialOptions()...).ListenPacket(ctx, "udp", "", metadata.AddrPort())
+	remoteAddress := metadata.AddrPort()
+	if metadata.DirectDstIP.IsValid() {
+		remoteAddress = netip.AddrPortFrom(metadata.DirectDstIP.Unmap(), metadata.DstPort)
+	}
+	pc, err := dialer.NewDialer(d.DialOptions()...).ListenPacket(ctx, "udp", "", remoteAddress)
 	if err != nil {
 		return nil, err
+	}
+	if metadata.DirectDstIP.IsValid() {
+		pc = &directMappedPacketConn{
+			PacketConn: pc,
+			originalIP: metadata.DstIP.Unmap(),
+			directIP:   metadata.DirectDstIP.Unmap(),
+		}
 	}
 	return d.loopBack.NewPacketConn(NewPacketConn(pc, d)), nil
 }
 
 func (d *Direct) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {
+	if metadata.DirectDstIP.IsValid() {
+		return nil
+	}
 	if (!metadata.Resolved() || resolver.DirectHostResolver != resolver.DefaultResolver) && metadata.Host != "" {
 		ip, err := resolveIPWithResolver(ctx, metadata.Host, d.prefer, resolver.DirectHostResolver)
 		if err != nil {
@@ -58,6 +79,36 @@ func (d *Direct) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {
 		metadata.DstIP = ip
 	}
 	return nil
+}
+
+type directMappedPacketConn struct {
+	net.PacketConn
+	originalIP netip.Addr
+	directIP   netip.Addr
+}
+
+func (c *directMappedPacketConn) WriteTo(packet []byte, destination net.Addr) (int, error) {
+	return c.PacketConn.WriteTo(packet, replaceDirectPacketAddress(destination, c.originalIP, c.directIP))
+}
+
+func (c *directMappedPacketConn) ReadFrom(packet []byte) (int, net.Addr, error) {
+	n, source, err := c.PacketConn.ReadFrom(packet)
+	if err == nil {
+		source = replaceDirectPacketAddress(source, c.directIP, c.originalIP)
+	}
+	return n, source, err
+}
+
+func replaceDirectPacketAddress(address net.Addr, from, to netip.Addr) net.Addr {
+	udpAddress, ok := address.(*net.UDPAddr)
+	if !ok || udpAddress == nil {
+		return address
+	}
+	addrPort := udpAddress.AddrPort()
+	if addrPort.Addr().Unmap() != from {
+		return address
+	}
+	return net.UDPAddrFromAddrPort(netip.AddrPortFrom(to, addrPort.Port()))
 }
 
 func (d *Direct) IsL3Protocol(metadata *C.Metadata) bool {

@@ -7,6 +7,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 
 	A "github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
+	N "github.com/metacubex/mihomo/common/net"
 	C "github.com/metacubex/mihomo/constant"
 	LI "github.com/metacubex/mihomo/listener/inbound"
 
@@ -119,17 +121,104 @@ func TestWireGuardProxySharesDeviceWithInboundTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const tcpPayload = "wireguard-inbound"
+	const (
+		tcpPayload = "wireguard-inbound"
+		udpPayload = "wireguard-inbound-udp"
+	)
+	localService, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = localService.Close() })
+	localServiceResult := make(chan error, 1)
+	go func() {
+		connection, acceptErr := localService.Accept()
+		if acceptErr != nil {
+			localServiceResult <- acceptErr
+			return
+		}
+		defer connection.Close()
+		request := make([]byte, len(tcpPayload))
+		if _, acceptErr = io.ReadFull(connection, request); acceptErr == nil {
+			_, acceptErr = connection.Write(request)
+		}
+		localServiceResult <- acceptErr
+	}()
+	localPacketService, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = localPacketService.Close() })
+	localPacketServiceResult := make(chan error, 1)
+	go func() {
+		packet := make([]byte, len(udpPayload))
+		n, source, packetErr := localPacketService.ReadFromUDP(packet)
+		if packetErr == nil {
+			_, packetErr = localPacketService.WriteToUDP(packet[:n], source)
+		}
+		localPacketServiceResult <- packetErr
+	}()
+
 	tcpMetadata := make(chan C.Metadata, 1)
+	localMetadata := make(chan C.Metadata, 1)
+	localPacketMetadata := make(chan C.Metadata, 1)
+	localPacketResult := make(chan error, 1)
+	direct := outbound.NewDirect()
+	serverAddress := netip.MustParseAddr("10.0.0.1")
 	baseTunnel := &TestTunnel{
 		HandleTCPConnFn: func(conn net.Conn, metadata *C.Metadata) {
 			defer conn.Close()
+			if metadata.DstIP == serverAddress {
+				localMetadata <- *metadata
+				remote, dialErr := direct.DialContext(context.Background(), metadata)
+				if dialErr != nil {
+					localServiceResult <- dialErr
+					return
+				}
+				defer remote.Close()
+				N.Relay(conn, remote)
+				return
+			}
 			tcpMetadata <- *metadata
 			request := make([]byte, len(tcpPayload))
 			if _, err := io.ReadFull(conn, request); err != nil {
 				return
 			}
 			_, _ = conn.Write(request)
+		},
+		HandleUDPPacketFn: func(packet C.UDPPacket, metadata *C.Metadata) {
+			go func() {
+				defer packet.Drop()
+				localPacketMetadata <- *metadata
+				dialMetadata := metadata.Clone()
+				connection, packetErr := direct.ListenPacketContext(context.Background(), dialMetadata)
+				if packetErr == nil && dialMetadata.DstIP != serverAddress {
+					packetErr = fmt.Errorf("DIRECT changed routed destination to %s", dialMetadata.DstIP)
+				}
+				if packetErr == nil {
+					defer connection.Close()
+					packetErr = connection.SetDeadline(time.Now().Add(time.Second))
+				}
+				if packetErr == nil {
+					_, packetErr = connection.WriteTo(packet.Data(), dialMetadata.UDPAddr())
+				}
+				response := make([]byte, len(udpPayload))
+				var n int
+				var responseSource net.Addr
+				if packetErr == nil {
+					n, responseSource, packetErr = connection.ReadFrom(response)
+				}
+				if packetErr == nil {
+					expectedSource := netip.AddrPortFrom(serverAddress, metadata.DstPort).String()
+					if responseSource.String() != expectedSource {
+						packetErr = fmt.Errorf("DIRECT returned local UDP source %s, expected %s", responseSource, expectedSource)
+					}
+				}
+				if packetErr == nil {
+					_, packetErr = packet.WriteBack(response[:n], responseSource)
+				}
+				localPacketResult <- packetErr
+			}()
 		},
 		CloseFn: func() error { return nil },
 	}
@@ -162,7 +251,7 @@ func TestWireGuardProxySharesDeviceWithInboundTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverListener, err := LI.NewWireGuard(server)
+	serverListener, err := LI.NewVPN(server)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,6 +360,93 @@ receivedReply:
 	case <-time.After(time.Second):
 		t.Fatal("WireGuard TCP inbound did not reach rule resolution")
 	}
+
+	localConnection, err := client.DialContext(context.Background(), &C.Metadata{
+		NetWork: C.TCP,
+		DstIP:   serverAddress,
+		DstPort: localService.Addr().(*net.TCPAddr).AddrPort().Port(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = localConnection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = localConnection.Write([]byte(tcpPayload)); err != nil {
+		t.Fatal(err)
+	}
+	reply = make([]byte, len(tcpPayload))
+	if _, err = io.ReadFull(localConnection, reply); err != nil {
+		t.Fatal(err)
+	}
+	if err = localConnection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if string(reply) != tcpPayload {
+		t.Fatalf("unexpected local service reply: %q", reply)
+	}
+	select {
+	case metadata := <-localMetadata:
+		if metadata.DstIP != serverAddress {
+			t.Fatalf("local service routing lost the original destination: %+v", metadata)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WireGuard local service traffic did not reach rule resolution")
+	}
+	select {
+	case err = <-localServiceResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WireGuard local service did not complete")
+	}
+
+	packetConnection, err := client.ListenPacketContext(context.Background(), &C.Metadata{
+		NetWork: C.UDP,
+		DstIP:   serverAddress,
+		DstPort: localPacketService.LocalAddr().(*net.UDPAddr).AddrPort().Port(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = packetConnection.Close() })
+	if err = packetConnection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	packetDestination := net.UDPAddrFromAddrPort(netip.AddrPortFrom(serverAddress, localPacketService.LocalAddr().(*net.UDPAddr).AddrPort().Port()))
+	if _, err = packetConnection.WriteTo([]byte(udpPayload), packetDestination); err != nil {
+		t.Fatal(err)
+	}
+	packetReply := make([]byte, len(udpPayload))
+	n, source, err := packetConnection.ReadFrom(packetReply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(packetReply[:n]) != udpPayload || source.String() != packetDestination.String() {
+		t.Fatalf("unexpected local UDP service reply %q from %s", packetReply[:n], source)
+	}
+	select {
+	case metadata := <-localPacketMetadata:
+		if metadata.DstIP != serverAddress {
+			t.Fatalf("local UDP service routing lost the original destination: %+v", metadata)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WireGuard local UDP service traffic did not reach rule resolution")
+	}
+	for name, result := range map[string]<-chan error{
+		"local UDP forwarding": localPacketResult,
+		"local UDP service":    localPacketServiceResult,
+	} {
+		select {
+		case err = <-result:
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not complete", name)
+		}
+	}
 }
 
 func TestWireGuardInboundReportsListenPortConflict(t *testing.T) {
@@ -300,7 +476,7 @@ func TestWireGuardInboundReportsListenPortConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := LI.NewWireGuard(adapter)
+	listener, err := LI.NewVPN(adapter)
 	if err != nil {
 		t.Fatal(err)
 	}

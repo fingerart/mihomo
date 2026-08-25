@@ -101,14 +101,12 @@ func (s *SingMux) Close() error {
 	return s.ProxyAdapter.Close()
 }
 
-func (s *SingMux) WireGuardInbound() *WireGuard {
-	provider, ok := s.ProxyAdapter.(interface {
-		WireGuardInbound() *WireGuard
-	})
+func (s *SingMux) VPNInbound() C.VPNInbound {
+	provider, ok := s.ProxyAdapter.(C.VPNInboundProvider)
 	if !ok {
 		return nil
 	}
-	return provider.WireGuardInbound()
+	return provider.VPNInbound()
 }
 
 func NewSingMux(option SingMuxOption, proxy ProxyAdapter) (ProxyAdapter, error) {

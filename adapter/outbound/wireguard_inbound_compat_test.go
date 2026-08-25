@@ -78,7 +78,7 @@ func TestWireGuardOutboundOnlySupportsMIPS(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = adapter.Close() })
-			if _, enabled := adapter.InboundOption(); enabled {
+			if adapter.VPNInbound() != nil {
 				t.Fatal("outbound-only WireGuard unexpectedly enabled inbound")
 			}
 			if test.wantListenAddress != "" && adapter.listenAddress.String() != test.wantListenAddress {
@@ -97,7 +97,7 @@ func TestWireGuardInboundSupportsMIPS(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 	handler := &mipsForwardTestHandler{udp: make(chan mipsForwardTestUDPResult, 1)}
-	if err = adapter.tunDevice.RegisterInboundForward(handler, time.Minute); err != nil {
+	if err = adapter.tunDevice.RegisterVPNForward(handler, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	source := netip.MustParseAddrPort("10.0.0.2:42000")

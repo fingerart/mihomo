@@ -276,7 +276,7 @@ func TestMIPSInboundForwardsICMPPacketAndReply(t *testing.T) {
 		icmpReply: reply,
 	}
 	const timeout = 17 * time.Second
-	if err = device.RegisterInboundForward(handler, timeout); err != nil {
+	if err = device.RegisterVPNForward(handler, timeout); err != nil {
 		t.Fatal(err)
 	}
 
@@ -383,7 +383,7 @@ func TestWireGuardICMPInboundRejectsReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = device.Close() })
-	if err = device.RegisterInboundForward(&mipsForwardTestHandler{icmpErr: tun.ErrReset}, time.Second); err != nil {
+	if err = device.RegisterVPNForward(&mipsForwardTestHandler{icmpErr: tun.ErrReset}, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	request := makeMIPSForwardTestEchoPacket(t, source, destination, false)
@@ -431,7 +431,7 @@ func TestWireGuardInboundWritesMixedICMPAndUDPBatch(t *testing.T) {
 		icmpInput: make(chan []byte, 1),
 		icmpReply: makeMIPSForwardTestEchoPacket(t, icmpDestination, sourceAddress, true),
 	}
-	if err = device.RegisterInboundForward(handler, time.Second); err != nil {
+	if err = device.RegisterVPNForward(handler, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	icmpRequest := makeMIPSForwardTestEchoPacket(t, sourceAddress, icmpDestination, false)
@@ -470,7 +470,7 @@ func TestWireGuardInboundRejectsRegistrationAfterClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := &wireGuardForwardTestTCPUDPHandler{}
-	if err = device.RegisterInboundForward(handler, time.Second); !errors.Is(err, net.ErrClosed) {
+	if err = device.RegisterVPNForward(handler, time.Second); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("register after close error = %v", err)
 	}
 }
@@ -557,4 +557,4 @@ func fragmentMIPSForwardTestIPv4Packet(t *testing.T, packet []byte) [][]byte {
 }
 
 var _ wireguard.ForwardHandler = (*mipsForwardTestHandler)(nil)
-var _ wireGuardICMPForwardHandler = (*mipsForwardTestHandler)(nil)
+var _ C.VPNICMPForwardHandler = (*mipsForwardTestHandler)(nil)

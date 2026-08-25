@@ -67,10 +67,11 @@ func TestWireGuardExposesInboundFromOutboundInstance(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
 
-	option, enabled := adapter.InboundOption()
-	if !enabled {
+	inbound := adapter.VPNInbound()
+	if inbound == nil {
 		t.Fatal("expected inbound capability")
 	}
+	option := inbound.VPNInboundOption()
 	if option.Name != adapter.Name() || option.ListenAddress.String() != "127.0.0.1:51820" {
 		t.Fatalf("unexpected inbound option: %+v", option)
 	}
@@ -161,9 +162,9 @@ func TestWireGuardInboundUsesUnconnectedEphemeralSocket(t *testing.T) {
 	if dialer.unconnected.Load() == 0 || dialer.connected.Load() != 0 {
 		t.Fatalf("inbound WireGuard used connected=%d unconnected=%d UDP sockets", dialer.connected.Load(), dialer.unconnected.Load())
 	}
-	localAddress := M.SocksaddrFromNet(adapter.InboundAddress())
+	localAddress := M.SocksaddrFromNet(adapter.VPNInboundAddress())
 	if !localAddress.IsValid() || localAddress.Port == 0 {
-		t.Fatalf("inbound WireGuard did not expose its ephemeral UDP address: %v", adapter.InboundAddress())
+		t.Fatalf("inbound WireGuard did not expose its ephemeral UDP address: %v", adapter.VPNInboundAddress())
 	}
 }
 
@@ -180,9 +181,9 @@ func TestWireGuardInboundHonorsListenAddressWithEphemeralPort(t *testing.T) {
 	if err = adapter.init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	localAddress := M.SocksaddrFromNet(adapter.InboundAddress())
+	localAddress := M.SocksaddrFromNet(adapter.VPNInboundAddress())
 	if localAddress.Addr != netip.MustParseAddr("127.0.0.1") || localAddress.Port == 0 {
-		t.Fatalf("inbound WireGuard listen address = %v", adapter.InboundAddress())
+		t.Fatalf("inbound WireGuard listen address = %v", adapter.VPNInboundAddress())
 	}
 }
 
@@ -258,7 +259,7 @@ func TestWireGuardInboundAutoSelectsGVisor(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
-	if _, enabled := adapter.InboundOption(); !enabled {
+	if adapter.VPNInbound() == nil {
 		t.Fatal("auto gVisor mode did not enable inbound")
 	}
 }
@@ -297,7 +298,7 @@ func TestWireGuardRegisterInboundRequiresInboundOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = adapter.Close() })
-	if err = adapter.RegisterInbound(nil, 0); !errors.Is(err, C.ErrNotSupport) {
+	if err = adapter.StartVPNInbound(nil, 0); !errors.Is(err, C.ErrNotSupport) {
 		t.Fatalf("expected unsupported error, got %v", err)
 	}
 }
@@ -327,7 +328,7 @@ func TestGVisorWireGuardInboundForwardsNonlocalICMPOnly(t *testing.T) {
 		icmpInput: make(chan []byte, 1),
 		icmpReply: reply,
 	}
-	if err = device.RegisterInboundForward(handler, time.Second); err != nil {
+	if err = device.RegisterVPNForward(handler, time.Second); err != nil {
 		t.Fatal(err)
 	}
 
@@ -424,7 +425,7 @@ func TestGVisorWireGuardInboundRejectsRegistrationAfterClose(t *testing.T) {
 	if err = device.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err = device.RegisterInboundForward(&wireGuardForwardTestTCPUDPHandler{}, time.Second); !errors.Is(err, net.ErrClosed) {
+	if err = device.RegisterVPNForward(&wireGuardForwardTestTCPUDPHandler{}, time.Second); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("register after close error = %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package inbound
 
 import (
 	"net"
+	"net/netip"
 
 	C "github.com/metacubex/mihomo/constant"
 )
@@ -41,6 +42,12 @@ func WithSpecialProxy(specialProxy string) Addition {
 func WithDstAddr(addr net.Addr) Addition {
 	return func(metadata *C.Metadata) {
 		_ = metadata.SetRemoteAddr(addr)
+	}
+}
+
+func WithDirectDstIP(addr netip.Addr) Addition {
+	return func(metadata *C.Metadata) {
+		metadata.DirectDstIP = addr.Unmap()
 	}
 }
 

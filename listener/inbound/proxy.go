@@ -1,24 +1,16 @@
 package inbound
 
-import (
-	"github.com/metacubex/mihomo/adapter/outbound"
-	C "github.com/metacubex/mihomo/constant"
-)
-
-type wireGuardInboundProvider interface {
-	WireGuardInbound() *outbound.WireGuard
-}
+import C "github.com/metacubex/mihomo/constant"
 
 func NewProxyInboundListener(adapter C.ProxyAdapter) (C.InboundListener, bool, error) {
-	switch provider := adapter.(type) {
-	case wireGuardInboundProvider:
-		wireGuard := provider.WireGuardInbound()
-		if wireGuard == nil {
-			return nil, false, nil
-		}
-		listener, err := NewWireGuard(wireGuard)
-		return listener, true, err
-	default:
+	provider, ok := adapter.(C.VPNInboundProvider)
+	if !ok {
 		return nil, false, nil
 	}
+	vpn := provider.VPNInbound()
+	if vpn == nil {
+		return nil, false, nil
+	}
+	listener, err := NewVPN(vpn)
+	return listener, true, err
 }

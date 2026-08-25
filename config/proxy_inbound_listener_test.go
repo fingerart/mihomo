@@ -57,7 +57,7 @@ func TestAppendProxyInboundListenersIncludesProxyInbound(t *testing.T) {
 	if listener == nil {
 		t.Fatal("proxy-derived inbound is missing from listeners")
 	}
-	if _, ok := listener.(*LI.WireGuard); !ok {
+	if _, ok := listener.(*LI.VPN); !ok {
 		t.Fatalf("unexpected listener type: %T", listener)
 	}
 }

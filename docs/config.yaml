@@ -1288,14 +1288,15 @@ proxies: # socks5
     #    pre-shared-key: 31aIhAPwktDGpH4JDhA8GNvjFXEf/a6+UaQRyOAiyfM=
     private-key: eCtXsJZ27+4PbhDkHnB923tkUn2Gj59wZw5wFA75MnU=
     udp: true
-    # inbound: false # 启用 TCP/UDP/ICMP 入站转发，默认 false；需要 gVisor IP 栈
+    # inbound: false # 启用 TCP/UDP/ICMP 入站转发，默认 false；支持 gVisor 和 MIPS IP 栈
+    # 入站流量正常经过规则；访问本节点 WireGuard IP 且最终选择 DIRECT 时会转发到本机同端口服务
     # listen: 0.0.0.0 # 可选，本地 UDP 监听地址，可独立于 listen-port 配置
     # listen-port: 51820 # 可选，本地 UDP 监听端口；不配置时使用临时端口
     # listen 和 listen-port 均未配置时使用自动监听地址和临时端口；显式配置任一字段时不能同时使用 dialer-proxy
     reserved: "U4An"
     # 数组格式也是合法的
     # reserved: [209,98,59]
-    # persistent-keepalive: 0
+    # persistent-keepalive: 0 # 位于 NAT 后且需要接收对端主动入站时，建议设为 25
     # ip-stack:
     #   mode: auto # options: auto, gvisor, mips; auto uses gVisor when compiled in and mihomo IP stack (MIPS) otherwise
     #   congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; ignored by gVisor

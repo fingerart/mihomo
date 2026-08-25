@@ -31,11 +31,7 @@ type wireguardInboundDevice struct {
 	closeErr          error
 }
 
-type wireGuardICMPForwardHandler interface {
-	NewICMPConnection(ctx context.Context, source, destination netip.Addr, writer C.ICMPWriter, timeout time.Duration) (C.ICMPConnection, error)
-}
-
-func (d *wireguardInboundDevice) RegisterInboundForward(handler wireguard.ForwardHandler, timeout time.Duration) error {
+func (d *wireguardInboundDevice) RegisterVPNForward(handler C.VPNForwardHandler, timeout time.Duration) error {
 	if handler == nil {
 		return syscall.EINVAL
 	}
@@ -53,7 +49,7 @@ func (d *wireguardInboundDevice) RegisterInboundForward(handler wireguard.Forwar
 	}
 
 	var icmpForwarder *wireGuardICMPForwarder
-	if icmpHandler, supportsICMP := handler.(wireGuardICMPForwardHandler); supportsICMP {
+	if icmpHandler, supportsICMP := handler.(C.VPNICMPForwardHandler); supportsICMP {
 		var err error
 		icmpForwarder, err = newWireGuardICMPForwarder(d.wireguardDevice, icmpHandler, timeout)
 		if err != nil {
@@ -119,7 +115,7 @@ func (d *wireguardInboundDevice) Close() error {
 type wireGuardICMPForwarder struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
-	handler     wireGuardICMPForwardHandler
+	handler     C.VPNICMPForwardHandler
 	timeout     time.Duration
 	local       map[netip.Addr]struct{}
 	inet4       net.PacketConn
@@ -129,7 +125,7 @@ type wireGuardICMPForwarder struct {
 	gate        wireGuardICMPForwardGate
 }
 
-func newWireGuardICMPForwarder(stack ipStack, handler wireGuardICMPForwardHandler, timeout time.Duration) (*wireGuardICMPForwarder, error) {
+func newWireGuardICMPForwarder(stack ipStack, handler C.VPNICMPForwardHandler, timeout time.Duration) (*wireGuardICMPForwarder, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}

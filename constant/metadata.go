@@ -223,6 +223,9 @@ type Metadata struct {
 
 	RawSrcAddr net.Addr `json:"-"`
 	RawDstAddr net.Addr `json:"-"`
+	// DirectDstIP overrides DstIP only when the selected outbound is DIRECT.
+	// It keeps the original VPN destination available to rules and logs.
+	DirectDstIP netip.Addr `json:"-"`
 	// Only domain rule
 	SniffHost string `json:"sniffHost"`
 }
