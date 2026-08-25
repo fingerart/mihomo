@@ -15,6 +15,7 @@ import (
 
 	C "github.com/metacubex/mihomo/constant"
 
+	"github.com/metacubex/mipstack"
 	M "github.com/metacubex/sing/common/metadata"
 )
 
@@ -298,5 +299,132 @@ func TestWireGuardRegisterInboundRequiresInboundOption(t *testing.T) {
 	t.Cleanup(func() { _ = adapter.Close() })
 	if err = adapter.RegisterInbound(nil, 0); !errors.Is(err, C.ErrNotSupport) {
 		t.Fatalf("expected unsupported error, got %v", err)
+	}
+}
+
+func TestGVisorWireGuardInboundForwardsNonlocalICMPOnly(t *testing.T) {
+	serverAddress := netip.MustParseAddr("192.0.2.1")
+	peerAddress := netip.MustParseAddr("192.0.2.50")
+	destination := netip.MustParseAddr("198.51.100.60")
+	stack, err := newIPStack(
+		IPStackOption{Mode: ipStackGVisor},
+		[]netip.Prefix{netip.PrefixFrom(serverAddress, serverAddress.BitLen())},
+		1400,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := newWireguardDevice(stack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = device.Close() })
+
+	reply := makeMIPSForwardTestEchoPacket(t, destination, peerAddress, true)
+	handler := &mipsForwardTestHandler{
+		icmp:      make(chan mipsForwardTestICMPResult, 1),
+		icmpInput: make(chan []byte, 1),
+		icmpReply: reply,
+	}
+	if err = device.RegisterInboundForward(handler, time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	request := makeMIPSForwardTestEchoPacket(t, peerAddress, destination, false)
+	if _, err = device.Write([][]byte{request}, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case session := <-handler.icmp:
+		if session.source != peerAddress || session.destination != destination {
+			t.Fatalf("forwarded ICMP session = %+v", session)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nonlocal ICMP session was not created")
+	}
+	select {
+	case input := <-handler.icmpInput:
+		if string(input) != string(request) {
+			t.Fatalf("forwarded ICMP packet = %x", input)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("nonlocal ICMP request was not forwarded")
+	}
+
+	outbound := make(chan []byte, 1)
+	go func() {
+		buffers := [][]byte{make([]byte, 2048)}
+		sizes := make([]int, 1)
+		count, readErr := device.Read(buffers, sizes, 0)
+		if readErr == nil && count == 1 {
+			outbound <- append([]byte(nil), buffers[0][:sizes[0]]...)
+		}
+	}()
+	select {
+	case packet := <-outbound:
+		parsed, parseErr := mipstack.ParseIPPacket(packet)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		message, messageErr := parsed.ICMPMessage()
+		if messageErr != nil || !message.IsEchoReply() || parsed.Source != destination || parsed.Destination != peerAddress {
+			t.Fatalf("forwarded ICMP reply = %+v, %v", parsed, messageErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("forwarded ICMP reply was not emitted")
+	}
+
+	localRequest := makeMIPSForwardTestEchoPacket(t, peerAddress, serverAddress, false)
+	if _, err = device.Write([][]byte{localRequest}, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case session := <-handler.icmp:
+		t.Fatalf("local ICMP request was routed as forwarding traffic: %+v", session)
+	case <-time.After(20 * time.Millisecond):
+	}
+	go func() {
+		buffers := [][]byte{make([]byte, 2048)}
+		sizes := make([]int, 1)
+		count, readErr := device.Read(buffers, sizes, 0)
+		if readErr == nil && count == 1 {
+			outbound <- append([]byte(nil), buffers[0][:sizes[0]]...)
+		}
+	}()
+	select {
+	case packet := <-outbound:
+		parsed, parseErr := mipstack.ParseIPPacket(packet)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		message, messageErr := parsed.ICMPMessage()
+		if messageErr != nil || !message.IsEchoReply() || parsed.Source != serverAddress || parsed.Destination != peerAddress {
+			t.Fatalf("local ICMP reply = %+v, %v", parsed, messageErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("local ICMP reply was not emitted")
+	}
+}
+
+func TestGVisorWireGuardInboundRejectsRegistrationAfterClose(t *testing.T) {
+	stack, err := newIPStack(
+		IPStackOption{Mode: ipStackGVisor},
+		[]netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")},
+		1400,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := newWireguardDevice(stack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = device.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = device.RegisterInboundForward(&wireGuardForwardTestTCPUDPHandler{}, time.Second); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("register after close error = %v", err)
 	}
 }

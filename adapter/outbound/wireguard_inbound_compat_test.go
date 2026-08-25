@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"strings"
 	"testing"
 	"time"
 
@@ -89,12 +88,31 @@ func TestWireGuardOutboundOnlySupportsMIPS(t *testing.T) {
 	}
 }
 
-func TestWireGuardInboundRejectsMIPS(t *testing.T) {
+func TestWireGuardInboundSupportsMIPS(t *testing.T) {
 	option := compatTestWireGuardOption()
 	option.Inbound = true
-	_, err := NewWireGuard(option)
-	if err == nil || !strings.Contains(err.Error(), "gVisor") {
-		t.Fatalf("expected gVisor requirement, got %v", err)
+	adapter, err := NewWireGuard(option)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	handler := &mipsForwardTestHandler{udp: make(chan mipsForwardTestUDPResult, 1)}
+	if err = adapter.tunDevice.RegisterInboundForward(handler, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	source := netip.MustParseAddrPort("10.0.0.2:42000")
+	destination := netip.MustParseAddrPort("198.51.100.10:53")
+	packet := makeMIPSForwardTestUDPPacket(t, source, destination, []byte("wireguard mips inbound"))
+	if _, err = adapter.tunDevice.Write([][]byte{packet}, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case forwarded := <-handler.udp:
+		if forwarded.metadata.Source.AddrPort() != source || forwarded.metadata.Destination.AddrPort() != destination {
+			t.Fatalf("forwarded UDP metadata = %+v", forwarded.metadata)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WireGuard MIPS stack did not admit a nonlocal inbound packet")
 	}
 }
 

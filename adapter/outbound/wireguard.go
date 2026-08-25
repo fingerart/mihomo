@@ -206,7 +206,7 @@ type ipStack interface {
 }
 
 // newIPStack constructs the selected userspace IP stack.
-func newIPStack(option IPStackOption, localAddresses []netip.Prefix, mtu uint32) (ipStack, error) {
+func newIPStack(option IPStackOption, localAddresses []netip.Prefix, mtu uint32, promiscuous bool) (ipStack, error) {
 	mode := option.Mode
 	if mode == ipStackAuto {
 		if features.WithGVisor {
@@ -221,6 +221,7 @@ func newIPStack(option IPStackOption, localAddresses []netip.Prefix, mtu uint32)
 	case ipStackMips:
 		stack, err := mipstack.New(mipstack.Config{
 			LocalAddresses: localAddresses,
+			Promiscuous:    promiscuous,
 			MTU:            mtu,
 			TCP: mipstack.TCPSocketDefaults{
 				CongestionControl: option.CongestionController,
@@ -239,7 +240,7 @@ func newIPStack(option IPStackOption, localAddresses []netip.Prefix, mtu uint32)
 		if err != nil {
 			return nil, err
 		}
-		return stack, nil
+		return &mipsStack{Stack: stack}, nil
 	default:
 		return nil, errors.New("invalid IP stack mode")
 	}
@@ -291,6 +292,14 @@ func (d *ipStackWireguardDevice) Events() <-chan tun.Event {
 func (d *ipStackWireguardDevice) Start() error {
 	d.events <- tun.EventUp
 	return nil
+}
+
+func (d *ipStackWireguardDevice) RegisterForward(options wireguard.ForwardOptions) error {
+	forwarder, ok := d.ipStack.(wireguard.RegisterForward)
+	if !ok {
+		return C.ErrNotSupport
+	}
+	return forwarder.RegisterForward(options)
 }
 
 func (d *ipStackWireguardDevice) Close() error {
@@ -381,16 +390,6 @@ func prepareWireGuardInbound(option WireGuardOption, localPrefixes []netip.Prefi
 	if option.ListenPort < 0 || option.ListenPort > 65535 {
 		return netip.Addr{}, nil, E.New("invalid WireGuard listen-port")
 	}
-	if option.Inbound {
-		stackMode := option.IPStack.Mode
-		if stackMode == ipStackAuto && features.WithGVisor {
-			stackMode = ipStackGVisor
-		}
-		if stackMode != ipStackGVisor {
-			return netip.Addr{}, nil, E.New("WireGuard inbound requires the gVisor IP stack")
-		}
-	}
-
 	var listenAddress netip.Addr
 	if option.Listen != "" {
 		parsedAddress, err := netip.ParseAddr(option.Listen)
@@ -580,7 +579,7 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 		return nil, E.New("missing local address")
 	}
 
-	stack, err := newIPStack(option.IPStack, outbound.localPrefixes, uint32(mtu))
+	stack, err := newIPStack(option.IPStack, outbound.localPrefixes, uint32(mtu), option.Inbound)
 	if err != nil {
 		return nil, E.Cause(err, "create WireGuard stack")
 	}

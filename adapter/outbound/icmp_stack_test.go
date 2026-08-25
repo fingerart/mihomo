@@ -9,7 +9,7 @@ import (
 func TestMIPSStackSupportsIPDialing(t *testing.T) {
 	stack, err := newIPStack(IPStackOption{Mode: ipStackMips}, []netip.Prefix{
 		netip.MustParsePrefix("10.0.0.2/32"),
-	}, 1408)
+	}, 1408, false)
 	if err != nil {
 		t.Fatal(err)
 	}

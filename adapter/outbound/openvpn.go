@@ -334,7 +334,7 @@ func (o *OpenVPN) startLocked(handshakeCtx context.Context) (ipStack, resolver.R
 	if mtu == 0 {
 		mtu = 1500
 	}
-	tunDevice, err := newIPStack(o.option.IPStack, push.Prefixes, uint32(mtu))
+	tunDevice, err := newIPStack(o.option.IPStack, push.Prefixes, uint32(mtu), false)
 	if err != nil {
 		_ = client.Close()
 		return nil, nil, fmt.Errorf("create OpenVPN stack device: %w", err)

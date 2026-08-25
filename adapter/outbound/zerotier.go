@@ -919,7 +919,7 @@ func (z *ZeroTier) applyNetworkConfig(config ZT.NetworkConfigData, generation ui
 	replaceDevice := oldDevice == nil || !oldConfig.ManagedAddressesEqual(config) || z.effectiveMTU(oldConfig) != mtu
 	device := oldDevice
 	if replaceDevice {
-		device, err = newIPStack(z.option.IPStack, config.Assigned, mtu)
+		device, err = newIPStack(z.option.IPStack, config.Assigned, mtu, false)
 		if err != nil {
 			return fmt.Errorf("create ZeroTier stack device: %w", err)
 		}
