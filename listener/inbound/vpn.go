@@ -95,8 +95,9 @@ func (l *VPN) Listen(tunnel C.Tunnel) error {
 				return []A.Addition{A.WithInUser(name)}
 			},
 		},
-		sourceUser:     l.option.SourceUser,
-		localAddresses: make(map[netip.Addr]netip.Addr, len(l.option.LocalPrefixes)),
+		sourceUser:            l.option.SourceUser,
+		localAddresses:        make(map[netip.Addr]netip.Addr, len(l.option.LocalPrefixes)),
+		dynamicLocalAddresses: l.option.LocalAddresses,
 	}
 	for _, prefix := range l.option.LocalPrefixes {
 		address := prefix.Addr().Unmap()
@@ -115,8 +116,32 @@ func (l *VPN) Close() error {
 
 type vpnForwardHandler struct {
 	*sing_tun.ListenerHandler
-	sourceUser     func(netip.Addr) string
-	localAddresses map[netip.Addr]netip.Addr
+	sourceUser            func(netip.Addr) string
+	localAddresses        map[netip.Addr]netip.Addr
+	dynamicLocalAddresses func() []netip.Addr
+}
+
+func localVPNDestination(address netip.Addr) netip.Addr {
+	if address.Is4() {
+		return netip.MustParseAddr("127.0.0.1")
+	}
+	return netip.MustParseAddr("::1")
+}
+
+func (h *vpnForwardHandler) directDestination(destination netip.Addr) (netip.Addr, bool) {
+	destination = destination.Unmap()
+	if directDestination, exists := h.localAddresses[destination]; exists {
+		return directDestination, true
+	}
+	if h.dynamicLocalAddresses != nil {
+		for _, address := range h.dynamicLocalAddresses() {
+			address = address.Unmap()
+			if address.IsValid() && address == destination {
+				return localVPNDestination(address), true
+			}
+		}
+	}
+	return netip.Addr{}, false
 }
 
 func (h *vpnForwardHandler) withMetadata(ctx context.Context, source, destination netip.Addr) context.Context {
@@ -127,7 +152,7 @@ func (h *vpnForwardHandler) withMetadata(ctx context.Context, source, destinatio
 		}
 	}
 	if destination.IsValid() {
-		if directDestination, exists := h.localAddresses[destination.Unmap()]; exists {
+		if directDestination, exists := h.directDestination(destination); exists {
 			additions = append(additions, A.WithDirectDstIP(directDestination))
 		}
 	}

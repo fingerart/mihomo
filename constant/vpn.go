@@ -12,11 +12,12 @@ import (
 )
 
 type VPNInboundOption struct {
-	Name          string
-	Type          Type
-	ListenAddress netip.AddrPort
-	LocalPrefixes []netip.Prefix
-	SourceUser    func(netip.Addr) string
+	Name           string
+	Type           Type
+	ListenAddress  netip.AddrPort
+	LocalPrefixes  []netip.Prefix
+	LocalAddresses func() []netip.Addr
+	SourceUser     func(netip.Addr) string
 }
 
 // VPNInbound exposes network-layer traffic from a proxy that owns virtual

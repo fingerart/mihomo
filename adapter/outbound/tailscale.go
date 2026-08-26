@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/component/ca"
@@ -46,7 +47,13 @@ type Tailscale struct {
 	backendInitCh   chan struct{}
 	backendInitErr  error
 
-	serverStarted bool
+	serverStarted atomic.Bool
+
+	vpnInboundMutex  sync.Mutex
+	unregisterVPNTCP func()
+	unregisterVPNUDP func()
+	vpnUDPFlowID     atomic.Uint64
+	peerNames        sync.Map
 
 	unregisterDNSResolver func()
 }
@@ -60,6 +67,7 @@ type TailscaleOption struct {
 	StateDir   string `proxy:"state-dir,omitempty"`
 	Ephemeral  bool   `proxy:"ephemeral,omitempty"`
 	UDP        bool   `proxy:"udp,omitempty"`
+	Inbound    bool   `proxy:"inbound,omitempty"`
 
 	AcceptRoutes           *bool  `proxy:"accept-routes,omitempty"`
 	ExitNode               string `proxy:"exit-node,omitempty"`
@@ -190,7 +198,7 @@ func (t *Tailscale) start() error {
 			t.setBackendInitialized(err)
 			return
 		}
-		t.serverStarted = true
+		t.serverStarted.Store(true)
 		ctx, cancel := context.WithTimeout(t.ctx, 30*time.Second)
 		defer cancel()
 		if err := t.applyPrefs(ctx); err != nil {
@@ -465,6 +473,7 @@ func (t *Tailscale) IsL3Protocol(metadata *C.Metadata) bool {
 }
 
 func (t *Tailscale) Close() error {
+	t.stopVPNInbound()
 	t.cancel()
 	if t.unregisterDNSResolver != nil {
 		t.unregisterDNSResolver()
@@ -472,7 +481,7 @@ func (t *Tailscale) Close() error {
 	t.startOnce.Do(func() {
 		t.startErr = errors.New("tailscale outbound closed")
 	})
-	if t.server != nil && t.serverStarted { // tsnet.Server.Close() must not be called before or concurrently with Start.
+	if t.server != nil && t.serverStarted.Load() { // tsnet.Server.Close() must not be called before or concurrently with Start.
 		return t.server.Close()
 	}
 	return nil

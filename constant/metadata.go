@@ -46,6 +46,7 @@ const (
 	SHADOWQUIC
 	INNER
 	WIREGUARD
+	TAILSCALE
 )
 
 type AddrType byte
@@ -130,6 +131,8 @@ func (t Type) String() string {
 		return "ShadowQuic"
 	case WIREGUARD:
 		return "WireGuard"
+	case TAILSCALE:
+		return "Tailscale"
 	case INNER:
 		return "Inner"
 	default:
@@ -182,6 +185,8 @@ func ParseType(t string) (*Type, error) {
 		res = SHADOWQUIC
 	case "WIREGUARD":
 		res = WIREGUARD
+	case "TAILSCALE":
+		res = TAILSCALE
 	case "INNER":
 		res = INNER
 	default:

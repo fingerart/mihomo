@@ -17,6 +17,7 @@ type TailscaleOption struct {
 	StateDir   string `proxy:"state-dir,omitempty"`
 	Ephemeral  bool   `proxy:"ephemeral,omitempty"`
 	UDP        bool   `proxy:"udp,omitempty"`
+	Inbound    bool   `proxy:"inbound,omitempty"`
 
 	AcceptRoutes           *bool  `proxy:"accept-routes,omitempty"`
 	ExitNode               string `proxy:"exit-node,omitempty"`

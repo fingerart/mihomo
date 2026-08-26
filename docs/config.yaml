@@ -1358,6 +1358,7 @@ proxies: # socks5
     # state-dir: ./tailscale # tsnet 状态目录，默认 tailscale
     # ephemeral: false # 是否作为 ephemeral node 登录，默认 false
     udp: true # 是否启用 UDP，默认 false
+    # inbound: false # 是否将未被 Tailscale 内部监听器处理的 TCP/UDP 入站交给 mihomo 规则，默认 false；ICMP 仍由 Tailscale 处理
     # accept-routes: true # 是否接受 Tailnet 中发布的 subnet routes
     # exit-node: 100.64.0.1 # 使用指定 exit node，可填写节点 IP；也支持 auto:any
     # exit-node-allow-lan-access: true # 使用 exit node 时是否允许访问本地 LAN
